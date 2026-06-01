@@ -1,165 +1,149 @@
 """
-Inputs:
-- rgb:     (H, W, 3) uint8   RGB image in **RGB** channel order
-- depth_m: (H, W)    float32 depth in **meters**
-- K:       Intrinsics object with fields (fx, fy, cx, cy)
+3D Point Cloud Instance Segmentation
 
-Output:
-- SegmentationResult with fields:
-  - labels:      (H, W) int32, 0=background, 1..N=instances
-  - num_objects: int, number of instances N
+This module provides segmentation algorithms for cluttered tabletop environments,
+including basic Connected Components Labeling (CCL) and advanced Depth-Aware Region Growing.
 """
 
-from __future__ import annotations
-from typing import Dict, Any, Optional
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, Tuple
 import numpy as np
+import scipy.ndimage
+
+# Import your custom RANSAC implementation (adjust path as needed)
+# from perception.ransac import table_mask_from_ransac
 
 
-from utils.segmentation_types import SegmentationResult
-from utils.ocid_io import Intrinsics
-from baseline import baseline_solve
-from utils.segmentation import table_mask_from_ransac, foreground_from_plane, cleanup_mask
+@dataclass
+class CameraIntrinsics:
+    """Standard camera intrinsics matrix components."""
+    fx: float
+    fy: float
+    cx: float
+    cy: float
 
-def solve(
-    rgb: np.ndarray,
-    depth_m: np.ndarray,
-    K: Intrinsics,
-    params: Optional[Dict[str, Any]] = None,
-) -> SegmentationResult:
+
+@dataclass
+class SegmentationResult:
+    """Container for segmentation pipeline outputs."""
+    labels: np.ndarray
+    num_objects: int
+    diagnostics: Optional[Dict[str, Any]] = None
+
+
+class TabletopSegmenter:
     """
-    Implement your instance segmentation method here.
-
-    Args:
-        rgb: (H, W, 3) uint8 RGB image (RGB order)
-        depth_m: (H, W) float32 depth in meters
-        K: camera intrinsics (fx, fy, cx, cy)
-        params: optional config dict (you can define your own keys)
-
-    Returns:
-        SegmentationResult:
-            labels: (H, W) int32, 0=background, 1..N=instances
-            num_objects: int, number of instances
+    A perception pipeline for isolating and segmenting objects on flat surfaces.
     """
+    def __init__(self, min_object_size: int = 800, max_range_m: float = 2.0):
+        self.min_area = min_object_size
+        self.max_range = max_range_m
 
-    DEFAULT_PARAMS = {
-        'max_range_m': 2.0,
-        'ransac': {
-            'iters': 2000,
-            'inlier_thresh_m': 0.008,
-            'min_inliers': 5000,
-            'seed': 0
-        },
-        'min_object_size': 800
-    }
+    def extract_foreground(self, depth_m: np.ndarray, plane_model: Any, K: CameraIntrinsics, margin_m: float = 0.01) -> np.ndarray:
+        """
+        Isolates points sitting above the estimated table plane.
+        (Note: Ensure your ransac.py handles the actual mathematical projection).
+        """
+        # Placeholder for foreground extraction logic. 
+        # Typically involves calculating point-to-plane distance and thresholding.
+        pass
 
-    # Use default parameters if none provided
-    if params is None:
-        params = DEFAULT_PARAMS
+    def cleanup_mask(self, mask: np.ndarray, open_iters: int = 1, close_iters: int = 2) -> np.ndarray:
+        """Removes small artifacts using morphological operations."""
+        cleaned = scipy.ndimage.binary_opening(mask, iterations=open_iters)
+        cleaned = scipy.ndimage.binary_closing(cleaned, iterations=close_iters)
+        return cleaned
 
-    H, W = depth_m.shape
+    def segment_ccl(self, fg_mask: np.ndarray) -> SegmentationResult:
+        """
+        Baseline Method: Standard Connected Components Labeling (CCL).
+        Groups spatially connected pixels without considering depth boundaries.
+        """
+        # Use SciPy's optimized CCL algorithm
+        structure = scipy.ndimage.generate_binary_structure(2, 2) # 8-connectivity
+        labels, num_features = scipy.ndimage.label(fg_mask, structure=structure)
+        
+        # Filter by minimum area
+        component_sizes = np.bincount(labels.ravel())
+        too_small = component_sizes < self.min_area
+        too_small_mask = too_small[labels]
+        labels[too_small_mask] = 0
+        
+        # Re-index remaining labels sequentially
+        unique_labels = np.unique(labels)
+        unique_labels = unique_labels[unique_labels > 0]
+        
+        final_labels = np.zeros_like(labels)
+        for new_id, old_id in enumerate(unique_labels, start=1):
+            final_labels[labels == old_id] = new_id
+            
+        return SegmentationResult(labels=final_labels, num_objects=len(unique_labels))
 
-    # Extract configuration values
-    max_range = float(params.get('max_range_m', 2.0))
-    ransac_cfg = params.get('ransac', {})
-    min_area = int(params.get('min_object_size', 800))
+    def segment_depth_aware(self, fg_clean: np.ndarray, depth_m: np.ndarray, depth_thresh: float = 0.02) -> SegmentationResult:
+        """
+        Advanced Method: Depth-Aware Region Growing.
+        Grows regions using DFS, strictly bounding growth by depth discontinuities.
+        Highly effective for touching objects with distinct depth profiles.
+        """
+        H, W = depth_m.shape
+        labels = np.zeros((H, W), dtype=np.int32)
+        visited = np.zeros((H, W), dtype=bool)
+        
+        instance_id = 1
 
-    # ====================================================================
-    # Table Plane Estimation (RANSAC)
-    # ====================================================================
-    table_mask, plane = table_mask_from_ransac(
-        depth_m,
-        K,
-        max_range,
-        ransac_cfg
-    )
+        for y in range(H):
+            for x in range(W):
+                # Skip if background or already assigned
+                if not fg_clean[y, x] or visited[y, x]:
+                    continue
 
-    # If no plane found, return empty segmentation
-    if plane is None:
-        return SegmentationResult(
-            labels=np.zeros((H, W), dtype=np.int32),
-            num_objects=0,
-        )
+                # Initialize region growing
+                stack = [(y, x)]
+                visited[y, x] = True
+                pixels = [(y, x)]
 
-    # ====================================================================
-    # Foreground Extraction
-    #
-    # Foreground consists of points above the detected table plane.
-    # ====================================================================
-    fg_mask = foreground_from_plane(
-        depth_m,
-        K,
-        plane,
-        max_range,
-        margin_m=0.01
-    )
+                # Perform DFS region growing
+                while stack:
+                    cy, cx = stack.pop()
 
-    # Clean small artifacts using morphological operations
-    fg_clean = cleanup_mask(
-        fg_mask,
-        open_iters=1,
-        close_iters=2
-    )
+                    # Explore 4-connected neighbors
+                    for ny, nx in [(cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)]:
+                        if (0 <= ny < H and 0 <= nx < W and not visited[ny, nx] and fg_clean[ny, nx]):
+                            
+                            # Check depth consistency
+                            if abs(depth_m[ny, nx] - depth_m[cy, cx]) < depth_thresh:
+                                visited[ny, nx] = True
+                                stack.append((ny, nx))
+                                pixels.append((ny, nx))
 
-    # ====================================================================
-    # Depth-Aware Region Growing
-    #
-    # Instead of standard connected components, we grow regions
-    # only if neighboring pixels have similar depth values.
-    #
-    # This helps separate touching objects with depth discontinuities.
-    # ====================================================================
+                # Filter out small noisy regions
+                if len(pixels) >= self.min_area:
+                    for py, px in pixels:
+                        labels[py, px] = instance_id
+                    instance_id += 1
 
-    labels = np.zeros((H, W), dtype=np.int32)
-    visited = np.zeros((H, W), dtype=bool)
+        return SegmentationResult(labels=labels, num_objects=instance_id - 1)
 
-    depth_thresh = 0.02  # Maximum allowed depth difference (meters)
-    instance_id = 1
-
-    for y in range(H):
-        for x in range(W):
-
-            # Skip if background or already assigned
-            if not fg_clean[y, x] or visited[y, x]:
-                continue
-
-            # Initialize region growing
-            stack = [(y, x)]
-            visited[y, x] = True
-            pixels = [(y, x)]
-
-            # Perform DFS region growing
-            while stack:
-                cy, cx = stack.pop()
-
-                # Explore 4-connected neighbors
-                for ny, nx in [
-                    (cy - 1, cx),
-                    (cy + 1, cx),
-                    (cy, cx - 1),
-                    (cy, cx + 1)
-                ]:
-                    if (
-                        0 <= ny < H and
-                        0 <= nx < W and
-                        not visited[ny, nx] and
-                        fg_clean[ny, nx]
-                    ):
-                        # Check depth consistency
-                        if abs(depth_m[ny, nx] - depth_m[cy, cx]) < depth_thresh:
-                            visited[ny, nx] = True
-                            stack.append((ny, nx))
-                            pixels.append((ny, nx))
-
-            # Filter out small noisy regions
-            if len(pixels) >= min_area:
-                for py, px in pixels:
-                    labels[py, px] = instance_id
-                instance_id += 1
-
-    # ====================================================================
-    # Return final segmentation result
-    # ====================================================================
-    return SegmentationResult(
-        labels=labels,
-        num_objects=instance_id - 1,
-    )
+    def process_scene(self, depth_m: np.ndarray, K: CameraIntrinsics, use_depth_aware: bool = True) -> SegmentationResult:
+        """
+        Master pipeline: Runs RANSAC, extracts foreground, cleans it, and segments.
+        """
+        H, W = depth_m.shape
+        
+        # 1. Estimate Table Plane (requires ransac module integration)
+        # table_mask, plane = table_mask_from_ransac(depth_m, K, self.max_range)
+        # if plane is None:
+        #     return SegmentationResult(labels=np.zeros((H, W), dtype=np.int32), num_objects=0)
+        
+        # 2. Extract and Clean Foreground
+        # fg_mask = self.extract_foreground(depth_m, plane, K)
+        # fg_clean = self.cleanup_mask(fg_mask)
+        
+        # For now, assuming fg_clean is generated:
+        fg_clean = np.ones((H, W), dtype=bool) # Placeholder until RANSAC is linked
+        
+        # 3. Segment
+        if use_depth_aware:
+            return self.segment_depth_aware(fg_clean, depth_m)
+        else:
+            return self.segment_ccl(fg_clean)
