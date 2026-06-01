@@ -28,7 +28,31 @@ A continuous-control machine learning module built and evaluated in MuJoCo.
 
 ## Installation & Setup
 
+This toolkit uses Conda for strict dependency management to avoid system-level package conflicts.
+
 1. Clone the repository:
    ```bash
    git clone [https://github.com/YourUsername/Autonomous-Robotics-Toolkit.git](https://github.com/YourUsername/Autonomous-Robotics-Toolkit.git)
    cd Autonomous-Robotics-Toolkit
+   ```
+
+2. Create and activate the virtual environment:
+   ```bash
+   conda create -n robotics-toolkit python=3.12 -y
+   conda activate robotics-toolkit
+   ```
+
+3. Install the required mathematical and visualization libraries:
+   ```bash
+   conda install numpy scipy matplotlib -y
+   ```
+
+## Quickstart: Perception Demo
+
+You can immediately test the 3D perception pipeline without needing to download massive external RGB-D datasets. The toolkit includes a synthetic data generator that builds a mathematical model of a cluttered tabletop and runs it through the segmentation engine.
+
+```bash
+python demo.py
+```
+
+*This will generate a synthetic depth map, isolate the tabletop using RANSAC, run depth-aware region growing, and save a color-coded instance mask to `output/demo_segmentation.png`.*
