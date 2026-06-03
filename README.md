@@ -56,3 +56,13 @@ python demo.py
 ```
 
 *This will generate a synthetic depth map, isolate the tabletop using RANSAC, run depth-aware region growing, and save a color-coded instance mask to `output/demo_segmentation.png`.*
+
+## Quickstart: Localization Demo
+
+This toolkit includes a 2D Monte Carlo Localization (MCL) engine. To see the particle filter in action without needing to configure the Webots physics simulator, run the standalone synthetic demo:
+
+```bash
+python demo_localization.py
+```
+
+*This script generates a synthetic enclosed environment, simulates a differential drive robot moving through it, calculates ray-casted LiDAR distances, and applies Stochastic Universal Sampling. It outputs a visualization of the particles converging on the true pose to `output/demo_localization.png`.*
