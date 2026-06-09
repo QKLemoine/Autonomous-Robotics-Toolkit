@@ -66,3 +66,13 @@ python demo_localization.py
 ```
 
 *This script generates a synthetic enclosed environment, simulates a differential drive robot moving through it, calculates ray-casted LiDAR distances, and applies Stochastic Universal Sampling. It outputs a visualization of the particles converging on the true pose to `output/demo_localization.png`.*
+
+## Quickstart: Path Planning Demo
+
+This toolkit includes an asymptotically optimal sampling-based planner (RRT*). To see the tree expansion and recursive path smoothing algorithms in action, run the standalone visualizer:
+
+```bash
+python demo_planning.py
+```
+
+*This script initializes a 2D configuration space with static obstacles, runs the RRT* search loop, and applies recursive collision-free trajectory smoothing. It outputs a visualization of the search tree and the optimal path to `output/demo_planning.png`.*
