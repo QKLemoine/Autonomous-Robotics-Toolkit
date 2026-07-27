@@ -76,3 +76,11 @@ python demo_planning.py
 ```
 
 *This script initializes a 2D configuration space with static obstacles, runs the RRT* search loop, and applies recursive collision-free trajectory smoothing. It outputs a visualization of the search tree and the optimal path to `output/demo_planning.png`.*
+
+## Quickstart: Imitation Learning Demo
+
+This toolkit includes a PyTorch-based Behavioral Cloning engine. It trains a Multi-Layer Perceptron (MLP) policy via Supervised Learning to mimic expert continuous-control locomotion trajectories in the MuJoCo `Ant-v4` environment.
+
+```bash
+# Ensure you have the expert data .pkl file in the /data directory, then run:
+python demo_learning.py
